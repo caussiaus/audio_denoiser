@@ -15,8 +15,8 @@ A Python-based pipeline for enhancing audio quality using Facebook's DNS64 model
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/caseyjussaume/audio_enhancement_pipeline.git
-cd audio_enhancement_pipeline
+git clone https://github.com/caussiaus/audio_denoiser.git
+cd audio_denoiser
 ```
 
 2. Create and activate the conda environment:
@@ -33,10 +33,13 @@ Place your audio files in the `audios/` directory and run:
 
 ```bash
 # Make sure you're in the project root directory
-python scripts/audio_pipeline.py --input_dir audios --output_dir output
+python scripts/audio_pipeline.py \
+    --input_dir audios \
+    --output_dir output \
+    --sr 16000 \
+    --chunk_secs 30 \
+    --overlap_secs 1
 ```
-
-Note: Always run the script from the project root directory, not from inside the `scripts/` directory.
 
 ### Quick Start
 
@@ -64,24 +67,21 @@ python scripts/audio_pipeline.py --input_dir audios --output_dir output
 ## Project Structure
 
 ```
-audio_enhancement_pipeline/
+audio_denoiser/
 ├── audios/           # Input audio files
 ├── output/           # Enhanced output files
 ├── scripts/          # Pipeline scripts
-│   ├── audio_pipeline.py    # Main pipeline script
-│   ├── stitch.py            # Audio stitching utility
-│   ├── enhance.py           # Audio enhancement script
-│   └── unstitch.py          # Audio unstitching utility
+│   └── audio_pipeline.py    # Main pipeline script
 ├── environment.yml   # Conda environment specification
 └── README.md         # This file
 ```
 
 ## How It Works
 
-1. **Stitching**: Combines multiple audio files into a single file for batch processing
-2. **Enhancement**: Processes the combined audio using the DNS64 model
-3. **Unstitching**: Splits the enhanced audio back into individual files
-4. **Metadata**: Preserves original file names and metadata
+The pipeline processes audio files in three main steps:
+1. **Loading**: Reads and preprocesses audio files
+2. **Enhancement**: Processes the audio using the DNS64 model in memory-efficient chunks
+3. **Saving**: Saves enhanced files with original metadata preserved
 
 ## Requirements
 
