@@ -1,7 +1,0 @@
-python enhance_all.py \
-  ../audios/ \
-  ../enhanced/ \
-  --model dns64 \
-  --sr 44100 \
-  --mapping-out ../mapping.json \
-  --chunk-secs 10

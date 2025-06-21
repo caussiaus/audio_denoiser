@@ -1,0 +1,21 @@
+
+Enhancing:   0%|          | 0/531 [00:00<?, ?it/s]/home/tempuser/miniconda3/envs/audio_env/lib/python3.10/site-packages/huggingface_hub/file_download.py:943: FutureWarning: `resume_download` is deprecated and will be removed in version 1.0.0. Downloads always resume when possible. If you want to force a new download, use `force_download=True`.
+  warnings.warn(
+/home/tempuser/miniconda3/envs/audio_env/lib/python3.10/site-packages/timm/models/layers/__init__.py:48: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+
+Enhancing:   0%|          | 0/531 [00:01<?, ?it/s]
+Traceback (most recent call last):
+  File "/home/tempuser/projects/audio_denoiser/scripts/audio_pipeline.py", line 130, in <module>
+    main()
+  File "/home/tempuser/projects/audio_denoiser/scripts/audio_pipeline.py", line 121, in main
+    if process_one(f, out_dir, device, args.force):
+  File "/home/tempuser/projects/audio_denoiser/scripts/audio_pipeline.py", line 87, in process_one
+    audiosr_enhance(tmp_in, tmp_out, device)
+  File "/home/tempuser/projects/audio_denoiser/scripts/audio_pipeline.py", line 58, in audiosr_enhance
+    model = audiosr.AudioSR(device=device)
+AttributeError: module 'audiosr' has no attribute 'AudioSR'
+
+ERROR conda.cli.main_run:execute(125): `conda run python3 scripts/audio_pipeline.py --input_dir input --output_dir output` failed. (See above for error)
+🚀 Using device: cuda
+

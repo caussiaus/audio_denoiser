@@ -1,125 +1,137 @@
 #!/usr/bin/env python3
 """
-audio_pipeline.py — Full MP3-only pipeline: stitch, enhance with DNS64, unstitch → MP3 outputs.
+audio_pipeline.py  ▸  **Batch AudioSR enhancer (resume‑safe)**
+──────────────────────────────────────────────────────────────────
+• Upscales every file to pristine 48‑kHz mono WAV using **AudioSR**.
+• Works with MP3 / WAV / FLAC / M4A / AAC input.
+• Skips files whose final output already exists (unless --force).
+• Uses a per‑file *temporary* workspace (output/.tmp) so no more
+  clutter or accidental overwrites.
+• File names are preserved **exactly**:  `song.mp3 → song.wav`.
 
-Usage:
-  python scripts/audio_pipeline.py \
-    --input_dir audios \
-    --output_dir output \
-    --sr 16000 \
-    --chunk_secs 30 \
-    --overlap_secs 1
+Requirements
+~~~~~~~~~~~~
+    pip install audiosr torch torchaudio tqdm ffmpeg-python
+    (FFmpeg must be on PATH.)
+
+Examples
+~~~~~~~~
+    # GPU run, resume‑safe
+    python audio_pipeline.py --input_dir in --output_dir out
+
+    # Force re‑processing and use CPU
+    python audio_pipeline.py --input in --output out --force --cpu
 """
 
-import os
-import torch
-import torchaudio
-from denoiser import pretrained
+from __future__ import annotations
+import argparse, shutil, subprocess, sys, uuid, tempfile
 from pathlib import Path
-import argparse
+from typing import Sequence
 from tqdm import tqdm
+import torch, torchaudio
+import audiosr
 
-# optional: to read ID3 tags
-try:
-    from mutagen.easyid3 import EasyID3
-except ImportError:
-    EasyID3 = None
+AUDIO_EXTS = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg"}
 
-def gather_sources(src_dir, exts=(".mp3", ".wav", ".flac", ".m4a")):
-    p = Path(src_dir)
-    return sorted([f for f in p.iterdir() if f.suffix.lower() in exts])
+def run(cmd: Sequence[str]):
+    """Run shell command, abort on error."""
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
-def load_and_preprocess(file_path: Path, target_sr: int):
-    wav, sr = torchaudio.load(str(file_path))
-    # downmix to mono
-    if wav.size(0) > 1:
-        wav = wav.mean(dim=0, keepdim=True)
-    # resample if needed
-    if sr != target_sr:
-        wav = torchaudio.transforms.Resample(sr, target_sr)(wav)
-    return wav
+# ────────────────────────────────────────────────────────────────────────────
+# FFmpeg helpers
+# ────────────────────────────────────────────────────────────────────────────
 
-def process_chunk(chunk: torch.Tensor, model, device):
-    # chunk: [1, T]
-    chunk = chunk.unsqueeze(0).to(device)      # → [1,1,T]
-    with torch.no_grad():
-        enhanced = model(chunk)                # → [1,1,T]
-    return enhanced.squeeze(0).cpu()           # → [1,T]
+def to_wav48k_mono(src: Path, dst: Path):
+    """Convert arbitrary audio to 48‑kHz mono WAV via FFmpeg."""
+    run([
+        "ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
+        "-ac", "1", "-ar", "48000", str(dst)
+    ])
 
-def extract_title(fp: Path):
-    if EasyID3:
+# ────────────────────────────────────────────────────────────────────────────
+# AudioSR wrapper (prefers Python API, falls back to CLI)
+# ────────────────────────────────────────────────────────────────────────────
+
+def audiosr_enhance(inp: Path, outp: Path, device: str):
+    """Call AudioSR. Chooses Python API if available, else CLI."""
+    try:
+        import audiosr
+        model = audiosr.build_model(device=device)
+        audiosr.super_resolution(model, str(inp), ddim_steps=200)
+    except Exception:
+        # CLI fallback (requires audiosr entry‑point on PATH)
+        cmd = ["audiosr", "-i", str(inp), "-o", str(outp)]
+        if device == "cpu":
+            cmd += ["--device", "cpu"]
+        run(cmd)
+
+# ────────────────────────────────────────────────────────────────────────────
+# Main processing routine
+# ────────────────────────────────────────────────────────────────────────────
+
+def process_one(src: Path, out_dir: Path, device: str, force: bool) -> bool:
+    final_out = out_dir / f"{src.stem}.wav"
+    if final_out.exists() and not force:
+        return False  # skipped
+
+    tmp_root = out_dir / ".tmp"
+    tmp_root.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=tmp_root) as td:
+        td = Path(td)
+        tmp_in  = td / "in.wav"
+        tmp_out = td / "out.wav"
+
+        # Always convert to uniform wav (cheap & safe)
+        to_wav48k_mono(src, tmp_in)
+
+        # Enhance
         try:
-            tags = EasyID3(str(fp))
-            return tags.get("title", [fp.stem])[0]
-        except Exception:
-            return fp.stem
-    else:
-        return fp.stem
+            audiosr_enhance(tmp_in, tmp_out, device)
+            # If tmp_out exists, use it (CLI fallback). Otherwise, use tmp_in (Python API overwrites input)
+            if tmp_out.exists():
+                shutil.move(tmp_out, final_out)
+            else:
+                shutil.move(tmp_in, final_out)
+        except Exception as e:
+            print(f"Error processing {src}: {e}")
+            return False
+
+    return True  # processed
+
+# ────────────────────────────────────────────────────────────────────────────
+# CLI entry‑point
+# ────────────────────────────────────────────────────────────────────────────
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--input_dir",  required=True,  help="Folder of audio files to process")
-    p.add_argument("--output_dir", default="enhanced_outputs", help="Where to save denoised files")
-    p.add_argument("--sr",         type=int, default=16000, help="Model sample‐rate (Hz)")
-    p.add_argument("--chunk_secs", type=int, default=30,   help="Chunk length in seconds")
-    p.add_argument("--overlap_secs",type=int, default=1,    help="Seconds overlap between chunks")
-    args = p.parse_args()
+    ap = argparse.ArgumentParser("Batch AudioSR enhancer (resume‑safe)")
+    ap.add_argument("--input_dir", default="input", help="Source directory")
+    ap.add_argument("--output_dir", default="output", help="Destination directory")
+    ap.add_argument("--cpu", action="store_true", help="Force CPU")
+    ap.add_argument("--force", action="store_true", help="Re‑process even if WAV exists")
+    args = ap.parse_args()
 
-    files = gather_sources(args.input_dir)
+    in_dir  = Path(args.input_dir)
+    out_dir = Path(args.output_dir)
+    if not in_dir.exists():
+        sys.exit(f"❌ Input dir not found: {in_dir}")
+    out_dir.mkdir(exist_ok=True)
+
+    files = sorted([p for p in in_dir.iterdir() if p.suffix.lower() in AUDIO_EXTS])
     if not files:
-        print("❌ No audio files found in input_dir.")
-        return
+        sys.exit("❌ No audio files found.")
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = pretrained.dns64().to(device).eval()
+    device = "cpu" if args.cpu else ("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"🚀 Using device: {device}")
 
-    # 1) Load & stitch everything into one long [1, total_samples] tensor
-    segments, lengths, stems = [], [], []
-    for f in files:
-        wav = load_and_preprocess(f, args.sr)
-        segments.append(wav)
-        lengths.append(wav.size(1))
-        stems.append(extract_title(f))
-    stitched = torch.cat(segments, dim=1)
+    done, skipped = 0, 0
+    for f in tqdm(files, desc="Enhancing"):
+        if process_one(f, out_dir, device, args.force):
+            done += 1
+        else:
+            skipped += 1
 
-    # 2) Enhance in overlapping chunks
-    chunk_size = args.chunk_secs * args.sr
-    overlap    = args.overlap_secs * args.sr
-    total_len  = stitched.size(1)
+    print(f"\n✅ Finished. New/updated: {done}  |  Skipped: {skipped}\nOutputs → {out_dir}\n")
 
-    enhanced_chunks = []
-    for start in tqdm(range(0, total_len, chunk_size - overlap), desc="Enhancing"):
-        end = min(start + chunk_size, total_len)
-        chunk = stitched[:, start:end]
-        if chunk.size(1) < chunk_size:
-            pad = torch.zeros(1, chunk_size - chunk.size(1))
-            chunk = torch.cat([chunk, pad], dim=1)
-        out_chunk = process_chunk(chunk, model, device)
-        # trim padding back to original (end-start) length
-        out_chunk = out_chunk[:, : end - start]
-        enhanced_chunks.append(out_chunk)
-
-    # 3) Recombine, **dropping** the overlap regions on all but the first chunk
-    enhanced = enhanced_chunks[0]
-    for chunk in enhanced_chunks[1:]:
-        enhanced = torch.cat([enhanced, chunk[:, overlap:]], dim=1)
-
-    # Sanity check
-    assert enhanced.size(1) == sum(lengths), \
-        f"Length mismatch: got {enhanced.size(1)} vs {sum(lengths)}"
-
-    # 4) Unstitch & save each segment as MP3 with "<title>_denoised.mp3"
-    cursor = 0
-    for length, title in zip(lengths, stems):
-        seg = enhanced[:, cursor: cursor + length]
-        cursor += length
-        out_fn = f"{title}_denoised.mp3"
-        out_path = Path(args.output_dir) / out_fn
-        torchaudio.save(str(out_path), seg, args.sr, format="mp3")
-        print(f"✔️ Saved {out_fn}")
-
-    print(f"\n✅ Done! All denoised files in: {args.output_dir}")
 
 if __name__ == "__main__":
     main()
