@@ -29,9 +29,18 @@ wheels/
 
 # Directories
 output/
+output2/
+raw/
 .cache/
 archive/
 segments/
+input/
+
+# Scripts to exclude (keep only audio_pipeline.py)
+scripts/2mp3.py
+scripts/analyze_audio.py
+scripts/rename_from_metadata.py
+scripts/test_advanced_denoising.py
 
 # Environment
 .env
